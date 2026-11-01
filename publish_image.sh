@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Default configuration
+DEFAULT_REGISTRY="docker.io"  # Docker Hub
+DEFAULT_NAMESPACE="dartfx"
+IMAGE_NAME="qsv"
+LOCAL_IMAGE="dartfx/qsv:latest"
+DEFAULT_PLATFORM="linux/amd64,linux/arm64"
+
+# Helper for showing usage
+usage() {
+  echo "Usage: $0 [options]"
+  echo "Options:"
+  echo "  -n, --namespace <name>  Docker Hub namespace/username (default: $DEFAULT_NAMESPACE)"
+  echo "  -q, --qsv-version <ver> Explicit QSV version to compile (e.g. 27.0.1) (default: auto-detected)"
+  echo "  -t, --tag <tag>          Additional custom tag to push"
+  echo "  -r, --registry <url>     Target container registry (default: $DEFAULT_REGISTRY)"
+  echo "  -p, --platform <plat>    Target platform (e.g. linux/amd64, linux/arm64) (default: $DEFAULT_PLATFORM)"
+  echo "  -s, --skip-verification  Skip running verify_image.sh before pushing"
+  echo "  --staging                Publish as staging tags ('staging' and '<version>-staging') instead of 'latest'"
+  echo "  -f, --rebuild, --force   Force a clean rebuild with --no-cache"
+  echo "  -h, --help               Show this help message"
+  exit "${1:-1}"
+}
+
+# Parse arguments
+NAMESPACE="$DEFAULT_NAMESPACE"
+CUSTOM_TAG=""
+REGISTRY="$DEFAULT_REGISTRY"
+SKIP_VERIFICATION=false
+REBUILD=false
+STAGING=false
+PLATFORM="$DEFAULT_PLATFORM"
+QSV_VERSION="${QSV_VERSION:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n|--namespace)
+      NAMESPACE="$2"
+      shift 2
+      ;;
+    -q|--qsv-version)
+      QSV_VERSION="${2#v}"
+      shift 2
+      ;;
+    --staging)
+      STAGING=true
+      shift
+      ;;
+    -t|--tag)
+      CUSTOM_TAG="$2"
+      shift 2
+      ;;
+    -r|--registry)
+      REGISTRY="$2"
+      shift 2
+      ;;
+    -p|--platform)
+      PLATFORM="$2"
+      shift 2
+      ;;
+    -s|--skip-verification)
+      SKIP_VERIFICATION=true
+      shift
+      ;;
+    -f|--rebuild|--force)
+      REBUILD=true
+      shift
+      ;;
+    -h|--help)
+      usage 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      usage 1
+      ;;
+  esac
+done
+
+# Auto-detect QSV version if not provided
+if [ -z "$QSV_VERSION" ]; then
+  if command -v qsv >/dev/null 2>&1; then
+    QSV_VERSION=$(qsv --version | awk '{print $2}' | cut -d'-' -f1 | sed 's/^v//')
+    echo "Auto-detected QSV version from local binary: ${QSV_VERSION}"
+  else
+    QSV_VERSION=$(curl -fsSL https://api.github.com/repos/dathere/qsv/releases/latest | grep -o '"tag_name": *"[^"]*"' | head -n1 | cut -d'"' -f4 | sed 's/^v//')
+    echo "Fetched latest official QSV release from GitHub: ${QSV_VERSION}"
+  fi
+fi
+
+EXTRA_BUILD_ARGS=(--build-arg "QSV_VERSION=${QSV_VERSION}")
+echo "Targeting QSV Version: ${QSV_VERSION}"
+
+# 1. Build local native image for verification
+if [ "$SKIP_VERIFICATION" = false ]; then
+  if [ "$REBUILD" = true ] || ! docker image inspect "${LOCAL_IMAGE}" >/dev/null 2>&1; then
+    echo "=== Rebuilding the local image for verification (native host platform) ==="
+    docker build --pull --no-cache "${EXTRA_BUILD_ARGS[@]}" -t "${LOCAL_IMAGE}" .
+  else
+    echo "=== Ensuring the local image is built for verification (native host platform) ==="
+    docker build --pull "${EXTRA_BUILD_ARGS[@]}" -t "${LOCAL_IMAGE}" .
+  fi
+
+  # 2. Verify image first
+  echo "=== Step 1: Verifying the image locally ==="
+  if [ -f "./verify_image.sh" ]; then
+    ./verify_image.sh "${LOCAL_IMAGE}"
+  else
+    echo "Warning: verify_image.sh not found. Skipping verification."
+  fi
+  echo ""
+else
+  echo "=== Skipping local verification ==="
+fi
+
+# Determine tags to push
+if [ "$STAGING" = true ]; then
+  TAGS=("staging" "${QSV_VERSION}-staging")
+else
+  TAGS=("latest" "${QSV_VERSION}")
+fi
+if [ -n "$CUSTOM_TAG" ]; then
+  TAGS+=("$CUSTOM_TAG")
+fi
+
+# 3. Target Registry Information
+echo "=== Step 2: Target Registry Information ==="
+echo "Preparing to push to registry: ${REGISTRY}/${NAMESPACE}"
+echo "Make sure you are logged in to the target registry."
+echo "E.g.: docker login ${REGISTRY}"
+echo ""
+
+# 4. Build and push multi-platform images using buildx
+echo "=== Step 3: Building and pushing multi-platform images ==="
+BUILDX_TAGS=()
+for tag in "${TAGS[@]}"; do
+  if [ "$REGISTRY" = "docker.io" ]; then
+    REMOTE_IMAGE="${NAMESPACE}/${IMAGE_NAME}:${tag}"
+  else
+    REMOTE_IMAGE="${REGISTRY}/${NAMESPACE}/${IMAGE_NAME}:${tag}"
+  fi
+  BUILDX_TAGS+=("-t" "${REMOTE_IMAGE}")
+  echo "Target remote tag: ${REMOTE_IMAGE}"
+done
+
+echo "Building and pushing for platform(s): ${PLATFORM}..."
+
+# Setup builder if building for multiple platforms
+if [[ "$PLATFORM" == *","* ]]; then
+  if ! docker buildx inspect multi-builder >/dev/null 2>&1; then
+    echo "Creating a new buildx builder 'multi-builder' for multi-platform support..."
+    docker buildx create --name multi-builder --use >/dev/null 2>&1 || true
+  else
+    docker buildx use multi-builder >/dev/null 2>&1 || true
+  fi
+  docker buildx inspect --bootstrap >/dev/null 2>&1 || true
+fi
+
+if [ "$REBUILD" = true ]; then
+  docker buildx build --platform "${PLATFORM}" "${EXTRA_BUILD_ARGS[@]}" --pull --no-cache "${BUILDX_TAGS[@]}" --push .
+else
+  docker buildx build --platform "${PLATFORM}" "${EXTRA_BUILD_ARGS[@]}" --pull "${BUILDX_TAGS[@]}" --push .
+fi
+
+echo "=== Successfully published all tags! ==="
