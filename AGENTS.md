@@ -10,7 +10,7 @@ It guarantees that all 78 non-GUI commands—including Polars SQL (`sqlp`, `join
 
 ## Downstream Consumers
 
-1. **`dartfx/docker-base`**:
+1. **`dartfx/base`**:
    Copies `/usr/local/bin/qsv` from `dartfx/qsv:<tag>`.
 2. **`dartfx/n8n`**:
    Copies `/usr/local/bin/qsv` from `dartfx/qsv:<tag>` into `/usr/local/bin/qsv`.

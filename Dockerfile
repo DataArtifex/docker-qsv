@@ -11,7 +11,7 @@
 #
 # Published as: dartfx/qsv:<tag>
 # Consumed by:
-#   - dartfx/docker-base (COPY --from=dartfx/qsv /usr/local/bin/qsv /usr/local/bin/qsv)
+#   - dartfx/base (COPY --from=dartfx/qsv /usr/local/bin/qsv /usr/local/bin/qsv)
 #   - dartfx/n8n         (COPY --from=dartfx/qsv /usr/local/bin/qsv /usr/local/bin/qsv)
 #   - Standalone CLI container (docker run --rm -it dartfx/qsv --help)
 # ==============================================================================
