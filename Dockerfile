@@ -46,11 +46,17 @@ RUN git clone --depth 1 --branch "${QSV_VERSION#v}" https://github.com/dathere/q
 
 WORKDIR /build/qsv
 
-# Compile full-featured QSV (excluding desktop clipboard/GUI file pickers that require X11/Wayland)
-RUN cargo build --release --locked --bin qsv \
+# Tune LTO and codegen-units to avoid linker memory exhaustion and speed up multi-core builds
+ENV CARGO_PROFILE_RELEASE_LTO="thin" \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS="16" \
+    CARGO_PROFILE_RELEASE_LUAU_LTO="thin" \
+    CARGO_PROFILE_RELEASE_LUAU_CODEGEN_UNITS="16"
+
+# Compile full-featured QSV using release-luau profile (unwind strategy for Luau scripting)
+RUN cargo build --profile release-luau --locked --bin qsv \
     --no-default-features \
     --features feature_capable,apply,fetch,foreach,geocode,get,luau,mcp,polars,profile,readstat,synthesize,to,viz \
-    && install -m 0755 target/release/qsv /usr/local/bin/qsv \
+    && install -m 0755 target/release-luau/qsv /usr/local/bin/qsv \
     && /usr/local/bin/qsv --version
 
 # --- Stage 2: Minimal Published Image ---
