@@ -46,14 +46,18 @@ RUN git clone --depth 1 --branch "${QSV_VERSION#v}" https://github.com/dathere/q
 
 WORKDIR /build/qsv
 
-# Tune LTO and codegen-units to avoid linker memory exhaustion and speed up multi-core builds
-ENV CARGO_PROFILE_RELEASE_LTO="thin" \
+# Disable LTO to avoid massive 2,000+ unit thin-LTO cross-crate expansion on Polars
+# Link with -lgcc so that aarch64 musl resolves __clear_cache from Luau JIT CodeAllocator
+ENV RUSTFLAGS="-C link-arg=-lgcc" \
+    CARGO_PROFILE_RELEASE_LTO="off" \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS="16" \
-    CARGO_PROFILE_RELEASE_LUAU_LTO="thin" \
+    CARGO_PROFILE_RELEASE_LUAU_LTO="off" \
     CARGO_PROFILE_RELEASE_LUAU_CODEGEN_UNITS="16"
 
-# Compile full-featured QSV using release-luau profile (unwind strategy for Luau scripting)
-RUN cargo build --profile release-luau --locked --bin qsv \
+# Compile full-featured QSV using release-luau profile with BuildKit cache mounts
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/qsv/target \
+    cargo build --profile release-luau --locked --bin qsv \
     --no-default-features \
     --features feature_capable,apply,fetch,foreach,geocode,get,luau,mcp,polars,profile,readstat,synthesize,to,viz \
     && install -m 0755 target/release-luau/qsv /usr/local/bin/qsv \
